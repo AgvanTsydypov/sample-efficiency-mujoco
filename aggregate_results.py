@@ -82,6 +82,23 @@ def steps_to_threshold(timesteps, curves, threshold):
     return np.array(out, dtype=float)
 
 
+def censored_median(steps):
+    """Median steps-to-threshold across all seeds, with censoring.
+
+    Seeds that never reached the threshold are treated as +inf rather than
+    dropped. Dropping them and taking the median of the rest would make an
+    algorithm that succeeds in 3 runs out of 5 look as cheap as one that
+    succeeds in 5 out of 5, which is the wrong comparison entirely.
+    """
+    n = len(steps)
+    filled = np.sort(np.where(np.isnan(steps), np.inf, steps))
+    if n % 2 == 1:
+        median = filled[n // 2]
+    else:
+        median = 0.5 * (filled[n // 2 - 1] + filled[n // 2])
+    return median, int(np.sum(~np.isnan(steps)))
+
+
 def mannwhitney_exact(a, b):
     """One-sided exact Mann-Whitney test for H1: values in b exceed those in a.
 
@@ -135,7 +152,7 @@ def plot_curves(ax, data, env_id):
         # Direct label at the right edge so identity is not carried by color alone.
         ax.annotate(algo.upper(), xy=(timesteps[-1], mean[-1]),
                     xytext=(6, 0), textcoords="offset points",
-                    color=color, fontsize=10, fontweight="600",
+                    color=color, fontsize=10, fontweight="bold",
                     va="center", ha="left")
 
     ax.set_xlabel("environment steps", color="#52514e", fontsize=10)
@@ -220,22 +237,28 @@ def print_threshold_table(data, thresholds):
     print(header)
     print("-" * len(header))
 
+    budget = max(timesteps[-1] for timesteps, _ in data.values())
+
     for threshold in thresholds:
         cells = []
         for algo, (timesteps, curves) in data.items():
             steps = steps_to_threshold(timesteps, curves, threshold)
-            n_reached = int(np.sum(~np.isnan(steps)))
-            if n_reached == 0:
-                cell = "not reached"
+            median, n_reached = censored_median(steps)
+            n_seeds = len(steps)
+
+            if np.isinf(median):
+                cell = f"> {budget / 1000:.0f}k"
             else:
-                cell = f"{np.nanmedian(steps) / 1000:.0f}k"
-                if n_reached < len(steps):
-                    cell += f" ({n_reached}/{len(steps)})"
+                cell = f"{median / 1000:.0f}k"
+            if n_reached < n_seeds:
+                cell += f" ({n_reached}/{n_seeds})"
             cells.append(f"{cell:>{col}}")
         print(f"{threshold:>10.0f}" + "".join(cells))
 
-    print("\nMedian across seeds. A count like (2/3) means one seed never reached "
-          "that level, so the median understates the true cost.")
+    print("\nMedian across all seeds. Seeds that never reached the threshold are "
+          "censored at the budget, not dropped, so a count like (3/5) raises the "
+          "reported cost instead of hiding it. '> 1000k' means more than half the "
+          "seeds never got there within the budget.")
 
 
 def main():
