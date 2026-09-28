@@ -30,9 +30,8 @@ events.out.tfevents.*
 videos/
 *.mp4
 
-# Packaging helpers, not part of the project itself
-.commit-history/
-setup_commits.sh
+# Local assistant context, not part of the project
+CLAUDE.md
 
 # OS and editors
 .DS_Store
