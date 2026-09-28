@@ -1,0 +1,21 @@
+{
+  "algo": "ppo",
+  "env": "Hopper-v5",
+  "seed": 1,
+  "total_timesteps": 1000000,
+  "eval_freq": 10000,
+  "n_eval_episodes": 10,
+  "hyperparameters": {
+    "policy": "MlpPolicy",
+    "learning_rate": "9.8e-05",
+    "n_steps": "512",
+    "batch_size": "32",
+    "n_epochs": "5",
+    "gamma": "0.999",
+    "gae_lambda": "0.99",
+    "clip_range": "0.2",
+    "ent_coef": "0.0",
+    "vf_coef": "0.19",
+    "max_grad_norm": "0.7"
+  }
+}
