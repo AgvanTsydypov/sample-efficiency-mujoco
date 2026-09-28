@@ -1,0 +1,36 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Experiment artifacts that are too large or not reproducible by inspection.
+# Evaluation logs (evaluations.npz) and config.json stay tracked on purpose:
+# they are small and they are the actual evidence behind the plots.
+results/**/*.zip
+results/**/*.pkl
+results/**/monitor/
+models/
+checkpoints/
+
+# Training logs
+logs/
+runs/
+wandb/
+*.monitor.csv
+events.out.tfevents.*
+
+# Rendered videos
+videos/
+*.mp4
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

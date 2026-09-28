@@ -1,0 +1,21 @@
+# Core RL stack
+stable-baselines3[extra]>=2.4.0
+gymnasium>=1.0.0
+gymnasium[mujoco]>=1.0.0
+gymnasium[classic-control]>=1.0.0
+
+# Physics simulation (pulled in by gymnasium[mujoco], pinned here for clarity)
+mujoco>=3.2.0
+
+# Deep learning backend
+torch>=2.4.0
+
+# Numerics and plotting
+numpy>=1.26.0
+matplotlib>=3.8.0
+
+# Experiment tracking (optional, remove if not using Weights & Biases)
+wandb>=0.18.0
+
+# Statistical aggregation across seeds (optional, see Agarwal et al. 2021)
+# rliable>=1.2.0
