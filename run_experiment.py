@@ -27,23 +27,60 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.callbacks import EvalCallback
 
-# Hyperparameters taken from rl-baselines3-zoo tuned configs for MuJoCo
-# locomotion. Using published values for both algorithms keeps the comparison
-# honest: neither side is tuned by hand for this specific study.
-PPO_KWARGS = dict(
-    policy="MlpPolicy",
-    learning_rate=9.8e-5,
-    n_steps=512,
-    batch_size=32,
-    n_epochs=5,
-    gamma=0.999,
-    gae_lambda=0.99,
-    clip_range=0.2,
-    ent_coef=0.0,
-    vf_coef=0.19,
-    max_grad_norm=0.7,
-)
+# Hyperparameters transcribed from rl-baselines3-zoo, hyperparams/ppo.yml and
+# hyperparams/sac.yml. Using published values for both algorithms keeps the
+# comparison honest: neither side is tuned by hand for this study.
+#
+# The zoo tunes PPO separately for every MuJoCo task, so these are keyed by
+# environment. Reusing one task's PPO config on another is the same mistake as
+# tuning one algorithm and not the other, and BASE_ENV below refuses to guess.
+# The zoo publishes v4 entries; they are applied to v5 here, which changed the
+# environments only slightly. That substitution is recorded in README.md.
+PPO_KWARGS = {
+    "Hopper-v5": dict(
+        policy="MlpPolicy",
+        learning_rate=9.80828e-05,
+        n_steps=512,
+        batch_size=32,
+        n_epochs=5,
+        gamma=0.999,
+        gae_lambda=0.99,
+        clip_range=0.2,
+        ent_coef=0.00229519,
+        vf_coef=0.835671,
+        max_grad_norm=0.7,
+    ),
+    "Walker2d-v5": dict(
+        policy="MlpPolicy",
+        learning_rate=5.05041e-05,
+        n_steps=512,
+        batch_size=32,
+        n_epochs=20,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.1,
+        ent_coef=0.000585045,
+        vf_coef=0.871923,
+        max_grad_norm=1,
+    ),
+    "HalfCheetah-v5": dict(
+        policy="MlpPolicy",
+        learning_rate=2.0633e-05,
+        n_steps=512,
+        batch_size=64,
+        n_epochs=20,
+        gamma=0.98,
+        gae_lambda=0.92,
+        clip_range=0.1,
+        ent_coef=0.000401762,
+        vf_coef=0.58096,
+        max_grad_norm=0.8,
+    ),
+}
 
+# The zoo's SAC entry for MuJoCo locomotion is the shared anchor: SB3 defaults
+# with learning_starts raised to 10000. It is the same for every task here, so
+# unlike PPO it needs no per-environment table.
 SAC_KWARGS = dict(
     policy="MlpPolicy",
     learning_rate=3e-4,
@@ -56,6 +93,25 @@ SAC_KWARGS = dict(
     gradient_steps=1,
     ent_coef="auto",
 )
+
+
+def hyperparameters(algo, env_id):
+    """Published configuration for this algorithm on this environment.
+
+    Fails loudly on an environment with no transcribed PPO entry. Silently
+    falling back to another task's values would reintroduce exactly the flaw
+    this table exists to prevent.
+    """
+    if algo == "sac":
+        return dict(SAC_KWARGS)
+    if env_id not in PPO_KWARGS:
+        raise SystemExit(
+            f"No published PPO configuration transcribed for {env_id}. "
+            f"Available: {', '.join(sorted(PPO_KWARGS))}. Add the entry from "
+            f"rl-baselines3-zoo hyperparams/ppo.yml rather than reusing another "
+            f"environment's values."
+        )
+    return dict(PPO_KWARGS[env_id])
 
 # PPO needs running normalization of observations and rewards on MuJoCo.
 # SAC does not, and normalizing rewards would interfere with its entropy
@@ -118,6 +174,10 @@ def main():
                          "run needs its own --label (for example sac_ls1000)")
         overrides["learning_starts"] = args.learning_starts
 
+    # Resolve the configuration now, so an environment with no published entry
+    # fails before any time is spent building environments.
+    hyperparameters(args.algo, args.env)
+
     run_dir = os.path.join(args.out, args.env, label, f"seed_{args.seed}")
     os.makedirs(run_dir, exist_ok=True)
 
@@ -138,7 +198,7 @@ def main():
     )
 
     algo_cls = {"ppo": PPO, "sac": SAC}[args.algo]
-    algo_kwargs = dict({"ppo": PPO_KWARGS, "sac": SAC_KWARGS}[args.algo])
+    algo_kwargs = hyperparameters(args.algo, args.env)
     algo_kwargs.update(overrides)
 
     model = algo_cls(env=train_env, seed=args.seed, verbose=1, **algo_kwargs)
