@@ -21,8 +21,23 @@ import matplotlib.pyplot as plt
 T_CRIT_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
              6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262}
 
-# Validated categorical palette, colorblind-safe on a white surface.
-COLORS = {"ppo": "#2a78d6", "sac": "#eb6834"}
+# Validated categorical palette, colorblind-safe on a white surface: worst
+# all-pairs separation is dE 9.2 under deuteranopia, 24.0 under normal vision.
+# Slot order is the safety mechanism, so take slots in order, never at random.
+# Aqua sits below 3:1 contrast on white, which the direct end-of-curve labels
+# cover. Named arms keep a fixed color so a figure does not repaint when an
+# ablation arm is added or dropped.
+CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a"]
+COLORS = {"ppo": CATEGORICAL[0], "sac": CATEGORICAL[1]}
+
+
+def color_for(algo, index):
+    """Fixed color for the baselines, next free slot for any other arm."""
+    if algo in COLORS:
+        return COLORS[algo]
+    used = set(COLORS.values())
+    free = [c for c in CATEGORICAL if c not in used]
+    return free[index % len(free)] if free else INK
 INK = "#0b0b0b"
 INK_MUTED = "#898781"
 GRID = "#e1e0d9"
@@ -131,8 +146,10 @@ def mannwhitney_exact(a, b):
 
 def plot_curves(ax, data, env_id):
     """Learning curves: per-seed lines, min-max band, and the mean."""
-    for algo, (timesteps, curves) in data.items():
-        color = COLORS.get(algo, INK)
+    end_labels = []
+
+    for index, (algo, (timesteps, curves)) in enumerate(data.items()):
+        color = color_for(algo, index)
 
         # Individual seeds, drawn thin. With 3 seeds this is the honest view:
         # it shows the spread as it actually is instead of a modelled interval.
@@ -148,10 +165,19 @@ def plot_curves(ax, data, env_id):
         mean = curves.mean(axis=0)
         ax.plot(timesteps, mean, color=color, linewidth=2,
                 label=f"{algo.upper()} (n={curves.shape[0]})")
+        end_labels.append([mean[-1], timesteps[-1], algo.upper(), color])
 
-        # Direct label at the right edge so identity is not carried by color alone.
-        ax.annotate(algo.upper(), xy=(timesteps[-1], mean[-1]),
-                    xytext=(6, 0), textcoords="offset points",
+    # Direct labels at the right edge, so identity never rests on color alone.
+    # Arms that end close together would print on top of each other, so nudge
+    # them apart vertically once the y range is known.
+    lo, hi = ax.get_ylim()
+    gap = 0.045 * (hi - lo)
+    end_labels.sort()
+    for i in range(1, len(end_labels)):
+        if end_labels[i][0] - end_labels[i - 1][0] < gap:
+            end_labels[i][0] = end_labels[i - 1][0] + gap
+    for y, x, text, color in end_labels:
+        ax.annotate(text, xy=(x, y), xytext=(6, 0), textcoords="offset points",
                     color=color, fontsize=10, fontweight="bold",
                     va="center", ha="left")
 
@@ -187,13 +213,16 @@ def print_final_table(data, window_hint):
         ci = T_CRIT_95.get(n - 1, 1.96) * sem
         rows.append((algo, n, window, final, final.mean(), ci))
 
-    header = (f"{'algo':<6}{'seeds':>7}{'window':>8}{'final':>10}"
+    # Width follows the longest arm name, so an ablation label such as
+    # "sac_ls1000" does not push the numeric columns out of alignment.
+    name_col = max(6, max(len(algo) for algo, *_ in rows) + 2)
+    header = (f"{'algo':<{name_col}}{'seeds':>7}{'window':>8}{'final':>10}"
               f"{'95% CI':>10}{'min':>10}{'max':>10}")
     print("\nFINAL PERFORMANCE")
     print(header)
     print("-" * len(header))
     for algo, n, window, final, mean, ci in rows:
-        print(f"{algo.upper():<6}{n:>7}{window:>8}{mean:>10.1f}{ci:>10.1f}"
+        print(f"{algo.upper():<{name_col}}{n:>7}{window:>8}{mean:>10.1f}{ci:>10.1f}"
               f"{final.min():>10.1f}{final.max():>10.1f}")
     print(f"\n'window' is how many final evaluation points were averaged per seed.")
     return rows
@@ -232,7 +261,7 @@ def print_separation(rows):
 def print_threshold_table(data, thresholds):
     """Sample efficiency: environment steps needed to reach each threshold."""
     print("\nSAMPLE EFFICIENCY (steps to first reach threshold, smoothed curve)")
-    col = 18
+    col = max(18, max(len(algo) for algo in data) + 4)
     header = f"{'threshold':>10}" + "".join(f"{algo.upper():>{col}}" for algo in data)
     print(header)
     print("-" * len(header))

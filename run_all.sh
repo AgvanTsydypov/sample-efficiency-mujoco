@@ -7,11 +7,23 @@
 #   SEEDS=5 ./run_all.sh                   # 5 seeds
 #   ENV=Walker2d-v5 STEPS=2000000 ./run_all.sh
 #
+# Ablation: one algorithm, an overridden hyperparameter, its own results folder.
+#   ALGOS=sac LABEL=sac_ls1000 RUN_ARGS="--learning-starts 1000" ./run_all.sh
+#
 set -euo pipefail
 
 ENV="${ENV:-Hopper-v5}"
 STEPS="${STEPS:-1000000}"
 SEEDS="${SEEDS:-3}"
+ALGOS="${ALGOS:-ppo sac}"
+LABEL="${LABEL:-}"
+RUN_ARGS="${RUN_ARGS:-}"
+
+# A label renames the results folder, so it only makes sense for a single arm.
+if [[ -n "$LABEL" && $(wc -w <<< "$ALGOS") -ne 1 ]]; then
+    echo "LABEL applies to one algorithm at a time; got ALGOS=\"$ALGOS\"" >&2
+    exit 1
+fi
 
 # One BLAS thread per process. The networks here are two 256-unit layers, far
 # too small for multithreaded matrix ops to pay off, and MuJoCo's own step is
@@ -36,6 +48,8 @@ mkdir -p run_logs
 
 echo "Environment:  $ENV"
 echo "Steps/run:    $STEPS"
+echo "Algorithms:   $ALGOS${LABEL:+  (label: $LABEL)}"
+echo "Extra args:   ${RUN_ARGS:-none}"
 echo "Seeds:        $SEEDS"
 echo "Concurrency:  $JOBS  (performance cores detected: $P_CORES)"
 echo
@@ -45,7 +59,7 @@ echo
 JOB_LIST=$(mktemp)
 trap 'rm -f "$JOB_LIST"' EXIT
 
-for algo in ppo sac; do
+for algo in $ALGOS; do
     for ((seed = 0; seed < SEEDS; seed++)); do
         echo "$algo $seed"
     done
@@ -53,17 +67,20 @@ done > "$JOB_LIST"
 
 run_one() {
     local algo="$1" seed="$2"
-    local log="run_logs/${algo}_seed${seed}.log"
-    echo "start  $algo seed $seed"
+    local name="${LABEL:-$algo}"
+    local log="run_logs/${name}_seed${seed}.log"
+    echo "start  $name seed $seed"
+    # RUN_ARGS is deliberately unquoted: it carries zero or more flags.
     if python run_experiment.py --algo "$algo" --seed "$seed" \
-        --env "$ENV" --steps "$STEPS" > "$log" 2>&1; then
-        echo "done   $algo seed $seed"
+        --env "$ENV" --steps "$STEPS" \
+        ${LABEL:+--label "$LABEL"} $RUN_ARGS > "$log" 2>&1; then
+        echo "done   $name seed $seed"
     else
-        echo "FAILED $algo seed $seed  (see $log)"
+        echo "FAILED $name seed $seed  (see $log)"
     fi
 }
 export -f run_one
-export ENV STEPS
+export ENV STEPS LABEL RUN_ARGS
 
 START=$(date +%s)
 
@@ -81,4 +98,4 @@ echo
 echo "Sweep finished in $((ELAPSED / 60))m $((ELAPSED % 60))s"
 echo
 
-python aggregate_results.py --env "$ENV"
+python aggregate_results.py --env "$ENV" --algos ${LABEL:-$ALGOS}

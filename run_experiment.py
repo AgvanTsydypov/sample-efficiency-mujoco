@@ -94,9 +94,31 @@ def main():
     parser.add_argument("--env", default="Hopper-v5")
     parser.add_argument("--steps", type=int, default=1_000_000)
     parser.add_argument("--out", default="results")
+    parser.add_argument(
+        "--learning-starts", type=int, default=None,
+        help="SAC only: steps of random actions collected before the first "
+             "update. Overriding it is an ablation, not a tuning step, so the "
+             "run must be given its own --label.")
+    parser.add_argument(
+        "--label", default=None,
+        help="Output folder name under results/<env>/. Defaults to the algorithm "
+             "name. Any run with overridden hyperparameters needs its own label, "
+             "so ablation runs never land in the same folder as the baseline.")
     args = parser.parse_args()
 
-    run_dir = os.path.join(args.out, args.env, args.algo, f"seed_{args.seed}")
+    # Validate before anything expensive is built, so a bad invocation fails
+    # immediately rather than after the environments are up.
+    label = args.label or args.algo
+    overrides = {}
+    if args.learning_starts is not None:
+        if args.algo != "sac":
+            parser.error("--learning-starts applies to SAC only")
+        if args.label is None:
+            parser.error("--learning-starts changes the configuration, so the "
+                         "run needs its own --label (for example sac_ls1000)")
+        overrides["learning_starts"] = args.learning_starts
+
+    run_dir = os.path.join(args.out, args.env, label, f"seed_{args.seed}")
     os.makedirs(run_dir, exist_ok=True)
 
     train_env, eval_env = build_envs(args.env, args.seed, args.algo, run_dir)
@@ -116,7 +138,8 @@ def main():
     )
 
     algo_cls = {"ppo": PPO, "sac": SAC}[args.algo]
-    algo_kwargs = {"ppo": PPO_KWARGS, "sac": SAC_KWARGS}[args.algo]
+    algo_kwargs = dict({"ppo": PPO_KWARGS, "sac": SAC_KWARGS}[args.algo])
+    algo_kwargs.update(overrides)
 
     model = algo_cls(env=train_env, seed=args.seed, verbose=1, **algo_kwargs)
     model.learn(total_timesteps=args.steps, callback=eval_callback, progress_bar=False)
@@ -130,11 +153,15 @@ def main():
     # Record everything needed to rerun this exact experiment.
     config = {
         "algo": args.algo,
+        "label": label,
         "env": args.env,
         "seed": args.seed,
         "total_timesteps": args.steps,
         "eval_freq": EVAL_FREQ,
         "n_eval_episodes": N_EVAL_EPISODES,
+        # Recorded separately from the full set so a later reader can see at a
+        # glance which values departed from the published configuration.
+        "overrides": overrides,
         "hyperparameters": {k: str(v) for k, v in algo_kwargs.items()},
     }
     with open(os.path.join(run_dir, "config.json"), "w") as f:
