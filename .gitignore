@@ -21,6 +21,7 @@ checkpoints/
 # Training logs
 logs/
 runs/
+run_logs/
 wandb/
 *.monitor.csv
 events.out.tfevents.*
@@ -28,6 +29,10 @@ events.out.tfevents.*
 # Rendered videos
 videos/
 *.mp4
+
+# Packaging helpers, not part of the project itself
+.commit-history/
+setup_commits.sh
 
 # OS and editors
 .DS_Store
