@@ -10,6 +10,9 @@
 # Ablation: one algorithm, an overridden hyperparameter, its own results folder.
 #   ALGOS=sac LABEL=sac_ls1000 RUN_ARGS="--learning-starts 1000" ./run_all.sh
 #
+# Raising SEEDS extends an existing sweep: runs that already have evaluation
+# logs are skipped. FORCE=1 redoes them.
+#
 set -euo pipefail
 
 ENV="${ENV:-Hopper-v5}"
@@ -59,11 +62,28 @@ echo
 JOB_LIST=$(mktemp)
 trap 'rm -f "$JOB_LIST"' EXIT
 
+# Skip runs that already have evaluation logs, so raising SEEDS extends a sweep
+# instead of repeating it. FORCE=1 overrides, for a genuine rerun.
+SKIPPED=0
 for algo in $ALGOS; do
+    name="${LABEL:-$algo}"
     for ((seed = 0; seed < SEEDS; seed++)); do
+        if [[ -z "${FORCE:-}" && -f "results/$ENV/$name/seed_$seed/evaluations.npz" ]]; then
+            SKIPPED=$(( SKIPPED + 1 ))
+            continue
+        fi
         echo "$algo $seed"
     done
 done > "$JOB_LIST"
+
+QUEUED=$(wc -l < "$JOB_LIST")
+echo "Queued $QUEUED run(s), $SKIPPED already present"
+if [[ "$QUEUED" -eq 0 ]]; then
+    echo "Nothing to run. Use FORCE=1 to redo existing runs."
+    python aggregate_results.py --env "$ENV" --algos ${LABEL:-$ALGOS}
+    exit 0
+fi
+echo
 
 run_one() {
     local algo="$1" seed="$2"
