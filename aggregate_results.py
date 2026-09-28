@@ -79,16 +79,25 @@ def main():
         plt.fill_between(timesteps, mean - half_width, mean + half_width,
                          color=color, alpha=0.2)
 
-        # Final performance: average the last 10 evaluation points per seed,
+        # Final performance: average the last evaluation points of each seed,
         # then aggregate across seeds. Taking the single best point instead
         # would reward lucky evaluations and overstate the result.
-        final_per_seed = curves[:, -10:].mean(axis=1)
+        # The window scales with run length: a fixed window of 10 points covers
+        # the final plateau in a 1M step run but a third of a 30k step run,
+        # which silently changes what "final performance" means.
+        n_evals = curves.shape[1]
+        window = max(1, min(10, n_evals // 10))
+        if n_evals < 20:
+            print(f"Warning: only {n_evals} eval points for {algo}, final score "
+                  f"averaged over the last {window}. Run longer before reporting.")
+
+        final_per_seed = curves[:, -window:].mean(axis=1)
         n_seeds = len(final_per_seed)
         sem = final_per_seed.std(ddof=1) / np.sqrt(n_seeds) if n_seeds > 1 else 0.0
         ci = T_CRIT_95.get(n_seeds - 1, 1.96) * sem
 
         summary_rows.append((
-            algo.upper(), n_seeds, final_per_seed.mean(), ci,
+            algo.upper(), n_seeds, window, final_per_seed.mean(), ci,
             final_per_seed.min(), final_per_seed.max(),
         ))
 
@@ -103,14 +112,27 @@ def main():
     plt.savefig(out_path, dpi=150)
     print(f"Plot saved to {out_path}\n")
 
-    header = f"{'algo':<6}{'seeds':>7}{'final':>12}{'95% CI':>12}{'min':>10}{'max':>10}"
+    if not summary_rows:
+        print("Nothing to summarize.")
+        return
+
+    header = (f"{'algo':<6}{'seeds':>7}{'window':>8}{'final':>12}"
+              f"{'95% CI':>12}{'min':>10}{'max':>10}")
     print(header)
     print("-" * len(header))
-    for algo, n, mean, ci, lo, hi in summary_rows:
-        print(f"{algo:<6}{n:>7}{mean:>12.1f}{ci:>12.1f}{lo:>10.1f}{hi:>10.1f}")
+    for algo, n, window, mean, ci, lo, hi in summary_rows:
+        print(f"{algo:<6}{n:>7}{window:>8}{mean:>12.1f}{ci:>12.1f}"
+              f"{lo:>10.1f}{hi:>10.1f}")
 
-    print("\nNote: with 3 seeds the confidence intervals are wide. Treat large "
-          "overlaps as 'no detectable difference', not as evidence of equality.")
+    print("\n'window' is how many final evaluation points were averaged per seed.")
+
+    max_seeds = max(row[1] for row in summary_rows)
+    if max_seeds < 2:
+        print(f"Only {max_seeds} seed per algorithm, so no confidence interval can "
+              "be estimated. Single-seed numbers say nothing about an algorithm.")
+    else:
+        print(f"With {max_seeds} seeds the confidence intervals are wide. Treat large "
+              "overlaps as 'no detectable difference', not as evidence of equality.")
 
 
 if __name__ == "__main__":
