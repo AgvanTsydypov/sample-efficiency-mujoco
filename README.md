@@ -10,6 +10,11 @@ A crossover found on Hopper, where PPO appeared to reach low returns first, did
 not survive: it shrank to two evaluation points once a configuration error was
 fixed, and the ordering is reversed on Walker2d.
 
+Neither result predicts robustness. Evaluating the same checkpoints under shifted
+simulator dynamics, PPO holds up better on Hopper and SAC holds up better on
+Walker2d, so the algorithm that wins on nominal dynamics is not the one that
+survives being wrong about them.
+
 | Hopper-v5 | Walker2d-v5 |
 |---|---|
 | ![SAC policy on Hopper-v5](videos/hopper-v5_sac_seed0.gif) | ![SAC policy on Walker2d-v5](videos/walker2d-v5_sac_seed0.gif) |
@@ -261,6 +266,105 @@ The error was caught by checking the transcribed numbers against the source file
 rather than by anything in the results looking wrong. That is the uncomfortable
 part and the reason it is recorded here.
 
+## Robustness to a shift in the dynamics
+
+A policy trained in a simulator is fitted to that simulator's numbers: link
+masses, ground friction, actuator strength. A real robot never matches them, so
+the practical question is not only how well a policy scores but how much of that
+score survives when the physics it trained on turns out to be wrong.
+
+`robustness.py` reloads the saved checkpoints, scales one MuJoCo property at a
+time away from nominal, and evaluates without any retraining. Mass and inertia
+scale together, since scaling one alone describes a body whose density and shape
+disagree. Friction touches only the sliding coefficient. Actuator strength scales
+the gear ratio that converts control signal to joint torque. No domain
+randomization was used during training, so this measures the baseline case that
+domain randomization exists to fix.
+
+Scores are given both as a fraction of each seed's own nominal return, which says
+how brittle a policy is relative to itself, and in absolute terms, which says
+whether it still does the job. The two can disagree, and where they do the
+absolute number is the one that matters for deployment.
+
+![Robustness on Hopper-v5](robustness/hopper-v5_robustness.png)
+
+![Robustness on Walker2d-v5](robustness/walker2d-v5_robustness.png)
+
+### Fraction of nominal return kept
+
+**Hopper-v5**
+
+| Parameter | Arm | 0.5x | 0.75x | 1.25x | 1.5x | 2x |
+|---|---|---|---|---|---|---|
+| mass | PPO | 0.24 | 0.72 | **0.80** | **0.50** | **0.20** |
+| mass | SAC | **0.65** | **1.00** | 0.26 | 0.18 | 0.11 |
+| friction | PPO | **0.36** | **0.65** | **0.28** | **0.15** | **0.12** |
+| friction | SAC | 0.15 | 0.28 | 0.24 | 0.10 | 0.07 |
+| gear | PPO | **0.18** | **0.72** | 0.44 | 0.24 | **0.10** |
+| gear | SAC | 0.10 | 0.17 | **0.96** | **0.25** | 0.09 |
+
+**Walker2d-v5**
+
+| Parameter | Arm | 0.5x | 0.75x | 1.25x | 1.5x | 2x |
+|---|---|---|---|---|---|---|
+| mass | PPO | 0.27 | 0.85 | 0.28 | **0.14** | **0.11** |
+| mass | SAC | **0.51** | **0.95** | **0.46** | 0.12 | 0.08 |
+| friction | PPO | 0.39 | 0.60 | 0.67 | 0.37 | 0.17 |
+| friction | SAC | **0.89** | **1.00** | **0.97** | **0.93** | **0.20** |
+| gear | PPO | **0.13** | 0.20 | 0.79 | 0.36 | 0.15 |
+| gear | SAC | 0.07 | **0.35** | **0.90** | **0.85** | **0.59** |
+
+Counting the 15 off-nominal cells per environment, PPO holds up better in 11 of
+15 on Hopper and SAC in 12 of 15 on Walker2d. By absolute return the tally is
+PPO 9 of 15 on Hopper and SAC 14 of 15 on Walker2d. This is a description, not a
+test.
+
+### What this says
+
+**Robustness does not follow from nominal performance, and it does not transfer
+between tasks.** SAC is the stronger policy on both environments under nominal
+dynamics, by a saturated rank test on Hopper. Under a shifted simulator the
+ordering flips depending on the task. Ranking two algorithms on one environment
+under one set of physical constants answers a narrower question than it appears
+to.
+
+**Failure is a cliff, not a slope.** Returns hold near nominal and then collapse.
+SAC on Hopper keeps 1.00 of its return at 0.75x mass and 0.26 at 1.25x. A walking
+policy that loses its gait falls over and the episode terminates early, so the
+return drops by a factor rather than a percentage. The useful quantity is
+therefore the width of the margin before the wall, not a degradation rate.
+
+**The margins are asymmetric, and the two algorithms fail in opposite
+directions.** On Hopper mass, SAC tolerates lighter links and breaks on heavier
+ones (0.65 at 0.5x, 0.26 at 1.25x), while PPO does the reverse (0.24 at 0.5x,
+0.80 at 1.25x). Two policies solving the same task with similar scores have
+learned gaits that fail under opposite perturbations.
+
+**The cleanest single contrast is friction on Walker2d.** SAC is close to
+unaffected from half to one and a half times nominal friction, keeping 0.89 to
+1.00, then collapses to 0.20 at double. PPO declines steadily across the whole
+range, from 0.39 to 0.17, and never matches SAC anywhere in it.
+
+**Relative and absolute can point different ways.** At 1.25x friction on Hopper,
+PPO keeps a larger fraction than SAC, 0.28 against 0.24, while SAC's absolute
+return is higher, 847 against 751. Reporting only the fraction would have given
+the wrong answer about which policy to deploy.
+
+### Caveats specific to this sweep
+
+- Five seeds, and the spread between them is large in the transition region. PPO
+  on Hopper at 0.75x friction scored 267, 2611, 1973, 148 and 2185 across seeds:
+  two runs dead, three intact. An IQM over five such values is not a precise
+  quantity.
+- More episodes would not fix that. The dominant variance is between seeds, not
+  between episodes within a seed, so the honest remedy is more training runs.
+- The best checkpoint is evaluated, not the end-of-training policy, because that
+  is what would be deployed. Its nominal scores therefore differ from the final
+  performance table above; `--checkpoint final` reproduces that comparison
+  instead.
+- One parameter is shifted at a time. Real transfer gets several at once, and
+  interactions are not measured here.
+
 ## Limitations
 
 - 5 seeds per arm. Enough to saturate the rank test on Hopper, not enough to
@@ -274,6 +378,9 @@ part and the reason it is recorded here.
 - Thresholds are absolute and chosen by hand. A threshold based metric depends on
   where the thresholds sit; the four used here span the range the arms cover.
 - The zoo publishes v4 hyperparameters and they are used on v5 here.
+- No domain randomization anywhere. The robustness sweep measures policies
+  trained on fixed dynamics, which is the situation the technique addresses, not
+  a comparison of methods that address it.
 - The bootstrap interval resamples five runs. Its coverage at that sample size is
   optimistic, and the honest fix is more runs, not a different interval.
 - Scores are not normalized per task, so the two environments are reported side by
@@ -294,6 +401,9 @@ python aggregate_results.py --env Walker2d-v5
 
 python record_policy.py --env Hopper-v5 --arm sac
 python record_policy.py --env Walker2d-v5 --arm sac
+
+python robustness.py --env Hopper-v5
+python robustness.py --env Walker2d-v5
 ```
 
 `record_policy.py` picks the highest scoring seed unless one is given. That is
@@ -318,7 +428,9 @@ run_experiment.py      one (arm, seed) run
 run_all.sh             the sweep, with bounded concurrency and skip-if-present
 aggregate_results.py   curves, tables, statistics
 record_policy.py       renders a saved checkpoint to mp4 and GIF
+robustness.py          evaluates checkpoints under shifted dynamics
 results/               evaluation logs and configs, one folder per run
+robustness/            dynamics-shift sweep results and figures
 figures/               generated plots
 videos/                policy recordings, GIFs tracked and mp4s ignored
 ```

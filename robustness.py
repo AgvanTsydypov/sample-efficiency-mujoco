@@ -98,17 +98,24 @@ def perturbed_env(env_id, kind, factor):
     return env
 
 
-def load_policy(results_dir, env_id, arm, seed):
-    """Best checkpoint for one run, plus PPO's saved observation statistics."""
+def load_policy(results_dir, env_id, arm, seed, which="best"):
+    """A saved checkpoint for one run, plus PPO's saved observation statistics.
+
+    "best" is the checkpoint the evaluation callback kept, which is the policy
+    anyone would actually deploy, so it is the default. "final" is the policy at
+    the end of training and matches the final-performance figures reported
+    elsewhere. They are different policies and score differently.
+    """
     run_dir = os.path.join(results_dir, env_id, arm, f"seed_{seed}")
 
+    order = ("best_model", "final_model") if which == "best" else ("final_model",)
     checkpoint = None
-    for name in ("best_model", "final_model"):
+    for name in order:
         if os.path.exists(os.path.join(run_dir, f"{name}.zip")):
             checkpoint = os.path.join(run_dir, name)
             break
     if checkpoint is None:
-        raise SystemExit(f"No checkpoint in {run_dir}")
+        raise SystemExit(f"No {which} checkpoint in {run_dir}")
 
     model = ALGO_CLASSES[arm.split("_")[0]].load(checkpoint)
 
@@ -148,7 +155,7 @@ def seeds_available(results_dir, env_id, arm):
                   if d.startswith("seed_"))
 
 
-def run_sweep(env_id, arms, factors, episodes, results_dir):
+def run_sweep(env_id, arms, factors, episodes, results_dir, which="best"):
     """Return scores[arm][kind] with shape (n_factors, n_seeds)."""
     scores = {}
     for arm in arms:
@@ -156,7 +163,7 @@ def run_sweep(env_id, arms, factors, episodes, results_dir):
         print(f"\n{arm.upper()}: seeds {seeds}")
         scores[arm] = {}
 
-        policies = {s: load_policy(results_dir, env_id, arm, s) for s in seeds}
+        policies = {s: load_policy(results_dir, env_id, arm, s, which) for s in seeds}
 
         for kind in PERTURBATIONS:
             grid = np.zeros((len(factors), len(seeds)))
@@ -177,25 +184,32 @@ def run_sweep(env_id, arms, factors, episodes, results_dir):
 
 
 def sanity_check(scores, factors):
-    """At factor 1.0 nothing was changed, so the three panels must agree.
+    """At factor 1.0 the model is untouched, so all three panels must be equal.
 
-    They are three independent evaluations of the same policy in the same
-    world. If they disagree by much, the evaluation is noisier than the effect
-    being measured and more episodes are needed.
+    This is not three independent estimates: the policy is deterministic, the
+    environment and the episode seeds are the same, and MuJoCo is deterministic,
+    so identical numbers are what correct code produces. Any spread at all means
+    a perturbation is leaking into the nominal setting.
+
+    These numbers are also not the final-performance figures reported elsewhere.
+    Those average each seed's last evaluation points, while this evaluates the
+    best checkpoint, which is the one you would actually deploy. The best
+    checkpoint usually scores higher, and on a noisy task it can score lower,
+    because both are estimates from a finite number of episodes.
     """
     if 1.0 not in factors:
         return
     row = factors.index(1.0)
-    print("\nNOMINAL CHECK (factor 1.0, should match the reported final scores)")
+    print("\nNOMINAL CHECK (factor 1.0: all three panels must be identical)")
     for arm, kinds in scores.items():
         values = [iqm(grid[row]) for grid in kinds.values()]
         spread = max(values) - min(values)
         print(f"  {arm.upper():<11} " +
               "  ".join(f"{k}={v:.0f}" for k, v in zip(kinds, values)) +
               f"   spread {spread:.0f}")
-        if spread > 0.1 * max(values):
-            print("    Spread above 10% of the score. Raise --episodes: the "
-                  "evaluation noise rivals the effect being measured.")
+        if spread > 1e-6:
+            print("    Nonzero spread. A perturbation is being applied at factor "
+                  "1.0; fix that before reading anything else here.")
 
 
 def normalized(grid, factors):
@@ -259,6 +273,13 @@ def plot(scores, factors, env_id, out_path):
 
 
 def print_table(scores, factors):
+    """Relative and absolute returns, because they can disagree.
+
+    Relative retention says how brittle a policy is next to its own nominal
+    self. Absolute return says whether it still does the job. An arm that starts
+    higher can keep a smaller fraction and still be the better policy under the
+    shift, so reporting only the fraction would be misleading.
+    """
     print("\nRETURN KEPT AT EACH SHIFT (IQM across seeds, 1.00 = nominal)")
     for kind in PERTURBATIONS:
         header = f"{kind:<11}" + "".join(f"{f:g}x".rjust(9) for f in factors)
@@ -269,6 +290,51 @@ def print_table(scores, factors):
             cells = "".join(f"{iqm(frac[i]):>9.2f}" for i in range(len(factors)))
             print(f"{arm.upper():<11}{cells}")
 
+    print("\n\nABSOLUTE RETURN AT EACH SHIFT (IQM across seeds)")
+    for kind in PERTURBATIONS:
+        header = f"{kind:<11}" + "".join(f"{f:g}x".rjust(9) for f in factors)
+        print("\n" + header)
+        print("-" * len(header))
+        for arm, kinds_data in scores.items():
+            grid = kinds_data[kind]
+            cells = "".join(f"{iqm(grid[i]):>9.0f}" for i in range(len(factors)))
+            print(f"{arm.upper():<11}{cells}")
+
+    if len(scores) == 2:
+        count_wins(scores, factors)
+
+
+def count_wins(scores, factors):
+    """How often each arm holds up better, off the nominal setting.
+
+    A descriptive tally, not a test. With five seeds and returns that collapse
+    rather than decay, single cells are noisy; the tally is only worth reading
+    when it leans heavily one way.
+    """
+    (arm_a, data_a), (arm_b, data_b) = scores.items()
+    rows = [i for i, f in enumerate(factors) if f != 1.0]
+
+    print("\n\nWHICH ARM HOLDS UP BETTER, OFF NOMINAL (descriptive tally)")
+    print(f"{'':<11}{'by fraction kept':>20}{'by absolute return':>22}")
+    totals = {arm_a: [0, 0], arm_b: [0, 0]}
+
+    for kind in PERTURBATIONS:
+        frac_a = normalized(data_a[kind], factors)
+        frac_b = normalized(data_b[kind], factors)
+        rel = sum(iqm(frac_a[i]) > iqm(frac_b[i]) for i in rows)
+        absolute_wins = sum(iqm(data_a[kind][i]) > iqm(data_b[kind][i]) for i in rows)
+        totals[arm_a][0] += rel
+        totals[arm_a][1] += absolute_wins
+        totals[arm_b][0] += len(rows) - rel
+        totals[arm_b][1] += len(rows) - absolute_wins
+        print(f"{kind:<11}{f'{arm_a.upper()} {rel}/{len(rows)}':>20}"
+              f"{f'{arm_a.upper()} {absolute_wins}/{len(rows)}':>22}")
+
+    n = len(rows) * len(PERTURBATIONS)
+    print("-" * 53)
+    for arm, (rel, absolute) in totals.items():
+        print(f"{arm.upper():<11}{f'{rel}/{n}':>20}{f'{absolute}/{n}':>22}")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -278,6 +344,9 @@ def main():
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--results", default="results")
     parser.add_argument("--out", default="robustness")
+    parser.add_argument("--checkpoint", choices=["best", "final"], default="best",
+                        help="best is the deployed policy and the default; final "
+                             "matches the final-performance figures in README.md")
     parser.add_argument("--reuse", action="store_true",
                         help="replot from the saved sweep instead of rerunning it")
     args = parser.parse_args()
@@ -295,13 +364,15 @@ def main():
     else:
         print(f"{args.env}: {len(args.arms)} arms x {len(PERTURBATIONS)} parameters "
               f"x {len(factors)} factors x {args.episodes} episodes per seed")
-        scores = run_sweep(args.env, args.arms, factors, args.episodes, args.results)
+        scores = run_sweep(args.env, args.arms, factors, args.episodes,
+                           args.results, args.checkpoint)
 
         flat = {f"{arm}__{kind}": grid
                 for arm, kinds in scores.items() for kind, grid in kinds.items()}
         np.savez(store, factors=np.array(factors), **flat)
         with open(os.path.join(args.out, f"{args.env.lower()}_config.json"), "w") as f:
             json.dump({"env": args.env, "arms": args.arms, "factors": factors,
+                       "checkpoint": args.checkpoint,
                        "episodes_per_seed": args.episodes,
                        "perturbations": PERTURBATIONS}, f, indent=2)
         print(f"\nSaved {store}")
