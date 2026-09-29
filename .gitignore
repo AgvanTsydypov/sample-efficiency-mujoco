@@ -26,8 +26,8 @@ wandb/
 *.monitor.csv
 events.out.tfevents.*
 
-# Rendered videos
-videos/
+# Rendered videos. The mp4 is large and stays out; the small GIF the README
+# embeds is tracked on purpose, since a linked GIF is what renders inline.
 *.mp4
 
 # Local assistant context, not part of the project

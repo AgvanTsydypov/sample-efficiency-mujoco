@@ -10,6 +10,14 @@ A crossover found on Hopper, where PPO appeared to reach low returns first, did
 not survive: it shrank to two evaluation points once a configuration error was
 fixed, and the ordering is reversed on Walker2d.
 
+| Hopper-v5 | Walker2d-v5 |
+|---|---|
+| ![SAC policy on Hopper-v5](videos/hopper-v5_sac_seed4.gif) | ![SAC policy on Walker2d-v5](videos/walker2d-v5_sac_seed3.gif) |
+
+Trained SAC policies, best seed of five, acting deterministically. Recorded with
+`record_policy.py`, which reloads the saved checkpoint and, for PPO, the saved
+observation normalization that the policy was trained under.
+
 ![PPO, SAC and the learning_starts ablation on Hopper-v5](figures/hopper-v5_comparison.png)
 
 ![PPO and SAC on Walker2d-v5](figures/walker2d-v5_comparison.png)
@@ -283,7 +291,14 @@ SEEDS=5 ALGOS=sac LABEL=sac_ls1000 RUN_ARGS="--learning-starts 1000" ./run_all.s
 
 python aggregate_results.py --env Hopper-v5 --algos ppo sac sac_ls1000
 python aggregate_results.py --env Walker2d-v5
+
+python record_policy.py --env Hopper-v5 --arm sac
+python record_policy.py --env Walker2d-v5 --arm sac
 ```
+
+`record_policy.py` picks the highest scoring seed unless one is given. That is
+fine for an illustration and would be misleading as a performance claim, so every
+number reported above aggregates across all five seeds instead.
 
 Raising `SEEDS` extends an existing sweep rather than repeating it: runs that
 already have evaluation logs are skipped, and `FORCE=1` redoes them.
@@ -302,8 +317,10 @@ Exact package versions used for the results above are in `requirements-lock.txt`
 run_experiment.py      one (arm, seed) run
 run_all.sh             the sweep, with bounded concurrency and skip-if-present
 aggregate_results.py   curves, tables, statistics
+record_policy.py       renders a saved checkpoint to mp4 and GIF
 results/               evaluation logs and configs, one folder per run
 figures/               generated plots
+videos/                policy recordings, GIFs tracked and mp4s ignored
 ```
 
 Model checkpoints are not tracked. Evaluation logs (`evaluations.npz`) and run
