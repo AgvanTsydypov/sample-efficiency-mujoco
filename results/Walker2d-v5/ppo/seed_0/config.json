@@ -1,7 +1,7 @@
 {
   "algo": "ppo",
   "label": "ppo",
-  "env": "Hopper-v5",
+  "env": "Walker2d-v5",
   "seed": 0,
   "total_timesteps": 1000000,
   "eval_freq": 10000,
@@ -9,15 +9,15 @@
   "overrides": {},
   "hyperparameters": {
     "policy": "MlpPolicy",
-    "learning_rate": "9.80828e-05",
+    "learning_rate": "5.05041e-05",
     "n_steps": "512",
     "batch_size": "32",
-    "n_epochs": "5",
-    "gamma": "0.999",
-    "gae_lambda": "0.99",
-    "clip_range": "0.2",
-    "ent_coef": "0.00229519",
-    "vf_coef": "0.835671",
-    "max_grad_norm": "0.7"
+    "n_epochs": "20",
+    "gamma": "0.99",
+    "gae_lambda": "0.95",
+    "clip_range": "0.1",
+    "ent_coef": "0.000585045",
+    "vf_coef": "0.871923",
+    "max_grad_norm": "1"
   }
 }
