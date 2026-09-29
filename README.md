@@ -1,8 +1,10 @@
 # Sample efficiency of PPO and SAC on MuJoCo locomotion
 
-SAC beats PPO on both environments tested, but how much cheaper it is depends
-heavily on the task: reaching a return of 2000 costs SAC 3 times fewer
-environment steps than PPO on Hopper-v5 and 1.2 times fewer on Walker2d-v5.
+SAC beats PPO on both environments tested. Pairing the runs up, the SAC run
+finished above the PPO run in 25 of 25 seed pairs on Hopper-v5 and 23 of 25 on
+Walker2d-v5. How much cheaper SAC is depends heavily on the task: reaching a
+return of 2000 costs it 3 times fewer environment steps than PPO on Hopper and
+1.2 times fewer on Walker2d.
 
 A crossover found on Hopper, where PPO appeared to reach low returns first, did
 not survive: it shrank to two evaluation points once a configuration error was
@@ -70,29 +72,68 @@ Average of the last 10 evaluation points of each seed, then aggregated across
 seeds. Taking the single best evaluation point instead would reward lucky
 evaluations and inflate every number.
 
+The headline aggregate is the interquartile mean, the average of the middle 50%
+of seeds, with a percentile bootstrap interval. The mean and its t interval are
+shown beside it, because where the two disagree the mean is being moved by a
+single extreme run. Reasons for the choice are in the next section.
+
 **Hopper-v5**
 
-| Arm | Mean | 95% CI | Min | Max |
-|---|---|---|---|---|
-| PPO | 2252.4 | +/- 549.4 | 1777.2 | 2811.3 |
-| SAC | 3228.5 | +/- 280.0 | 2968.5 | 3524.1 |
-| SAC, `learning_starts=1000` | 3247.5 | +/- 350.8 | 2832.9 | 3510.2 |
+| Arm | IQM | 95% CI (bootstrap) | Mean | 95% CI (t) | Min | Max |
+|---|---|---|---|---|---|---|
+| PPO | 2224.5 | [1800, 2717] | 2252.4 | +/- 549.4 | 1777.2 | 2811.3 |
+| SAC | 3216.6 | [2998, 3472] | 3228.5 | +/- 280.0 | 2968.5 | 3524.1 |
+| SAC, `learning_starts=1000` | 3298.1 | [2917, 3467] | 3247.5 | +/- 350.8 | 2832.9 | 3510.2 |
 
 **Walker2d-v5**
 
-| Arm | Mean | 95% CI | Min | Max |
-|---|---|---|---|---|
-| PPO | 3217.9 | +/- 1059.0 | 2488.8 | 4272.9 |
-| SAC | 4327.1 | +/- 254.9 | 4070.2 | 4600.6 |
+| Arm | IQM | 95% CI (bootstrap) | Mean | 95% CI (t) | Min | Max |
+|---|---|---|---|---|---|---|
+| PPO | 3109.3 | [2512, 4184] | 3217.9 | +/- 1059.0 | 2488.8 | 4272.9 |
+| SAC | 4321.5 | [4109, 4528] | 4327.1 | +/- 254.9 | 4070.2 | 4600.6 |
 
 On Hopper the two groups are completely separated: the weakest SAC run (2968.5)
-beat the strongest PPO run (2811.3). That gives an exact one sided Mann-Whitney
-p of 0.0040, the smallest value a 5 against 5 design can produce, so the test is
-saturated rather than merely significant.
+beat the strongest PPO run (2811.3). Every one of the 25 seed pairs goes the same
+way, so the probability that a SAC run beats a PPO run is estimated at 1.00 and
+the exact one sided Mann-Whitney p is 0.0040. That is the smallest value a 5
+against 5 design can produce, so the test is saturated rather than merely
+significant.
 
-On Walker2d the groups interleave. SAC still leads, at p = 0.0159, but PPO's best
-seed finished above two of the five SAC seeds. The same conclusion holds on both
-tasks with visibly different confidence.
+On Walker2d the groups interleave. SAC leads in 23 of 25 pairs, P = 0.92 at
+p = 0.0159, but PPO's best seed finished above two of the five SAC seeds. The same
+conclusion holds on both tasks with visibly different confidence.
+
+The two SAC arms on Hopper remain indistinguishable. Their bootstrap intervals,
+[2998, 3472] and [2917, 3467], overlap over almost their whole length, and the
+IQM and the mean disagree about which arm is nominally ahead.
+
+### How uncertainty is reported
+
+Two choices, both following Agarwal et al. (2021), and both prompted by problems
+this study actually hit.
+
+**The interquartile mean instead of the mean.** A mean over five runs moves with
+whichever run is most extreme. PPO on Walker2d is the clear case: its IQM is
+3109.3 against a mean of 3217.9, because one seed finished at 4272.9 while another
+finished at 2488.8. The IQM drops the best and the worst and averages the middle
+three, so the number describes a typical run rather than the luckiest one. On
+Hopper, where PPO's seeds sit closer together, the two differ by 28 points and the
+choice barely matters. Where the gap is large, the mean is the one to distrust.
+
+**A percentile bootstrap interval instead of a t interval.** The t interval
+assumes the seed scores are normal and places a symmetric band around the mean.
+On five runs it routinely reaches past what the environment can produce: an early
+version of this study, aggregating three evaluation points, printed a lower bound
+of -910 for a return that cannot go below zero. The bootstrap resamples the runs
+with replacement and reads percentiles off the resulting distribution, so it
+assumes nothing and cannot leave the observed range. It is also narrower here in
+every case, by roughly 17%.
+
+Both are computed in `aggregate_results.py` with a fixed resampling seed, so the
+intervals are reproducible. With five runs the bootstrap resamples a very small
+set and its coverage is optimistic; it is a better behaved interval than the t
+one, not a tight one. Agarwal et al. address that by pooling runs across tasks,
+which needs a per-task score normalization this study does not define.
 
 ### Sample efficiency
 
@@ -130,10 +171,13 @@ quoting a property of their benchmark.
 
 | Finding | Hopper | Walker2d | Verdict |
 |---|---|---|---|
-| SAC ends above PPO | complete separation, p = 0.0040 | interleaved, p = 0.0159 | replicated, weaker |
+| SAC ends above PPO | 25 of 25 pairs, p = 0.0040 | 23 of 25 pairs, p = 0.0159 | replicated, weaker |
 | SAC cheaper above low thresholds | 3.0x to 5.1x | 1.2x | replicated, magnitude varies 4x |
-| PPO more variable across seeds | CI 2.0x wider than SAC | CI 4.2x wider | replicated |
+| PPO more variable across seeds | interval 1.9x wider than SAC | 4.0x wider | replicated |
 | PPO reaches low returns first | 80k against 100k | 270k against 220k, reversed | **did not replicate** |
+
+Interval widths above are bootstrap widths; the t intervals give 2.0x and 4.2x,
+so this comparison does not depend on which one is used.
 
 The last row is the reason the second environment was worth an hour and a half of
 compute. On Hopper alone, PPO reaching a return of 1000 sooner looked like a real
@@ -222,9 +266,10 @@ part and the reason it is recorded here.
 - Thresholds are absolute and chosen by hand. A threshold based metric depends on
   where the thresholds sit; the four used here span the range the arms cover.
 - The zoo publishes v4 hyperparameters and they are used on v5 here.
-- Aggregation uses the mean and a t interval. For a small number of runs,
-  Agarwal et al. (2021) argue for the interquartile mean with bootstrap intervals
-  instead. That is the next thing to change here.
+- The bootstrap interval resamples five runs. Its coverage at that sample size is
+  optimistic, and the honest fix is more runs, not a different interval.
+- Scores are not normalized per task, so the two environments are reported side by
+  side rather than pooled into one aggregate.
 
 ## Reproduce
 
