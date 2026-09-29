@@ -29,6 +29,14 @@ T_CRIT_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
 # ablation arm is added or dropped.
 CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a"]
 COLORS = {"ppo": CATEGORICAL[0], "sac": CATEGORICAL[1]}
+INK = "#0b0b0b"
+INK_MUTED = "#898781"
+GRID = "#e1e0d9"
+
+SMOOTH_WINDOW = 5      # evaluation points; 5 x eval_freq 10k = 50k steps
+N_RESAMPLES = 10_000   # bootstrap resamples for the final-performance interval
+N_RESAMPLES_CURVE = 2_000   # fewer per evaluation point, since there are many
+BOOTSTRAP_SEED = 0     # fixed, so the reported intervals are reproducible
 
 
 def color_for(algo, index):
@@ -38,11 +46,57 @@ def color_for(algo, index):
     used = set(COLORS.values())
     free = [c for c in CATEGORICAL if c not in used]
     return free[index % len(free)] if free else INK
-INK = "#0b0b0b"
-INK_MUTED = "#898781"
-GRID = "#e1e0d9"
 
-SMOOTH_WINDOW = 5  # evaluation points; 5 x eval_freq 10k = 50k steps
+
+def iqm(values, axis=-1):
+    """Interquartile mean: the mean of the middle 50% of the runs.
+
+    Trims 25% from each tail. With 5 runs that drops the best and the worst and
+    averages the remaining three, so one collapsed or one lucky seed cannot drag
+    the estimate the way it drags a mean. This is the aggregate recommended by
+    Agarwal et al. (2021) for the small run counts typical of deep RL.
+    """
+    x = np.sort(np.asarray(values, dtype=float), axis=axis)
+    n = x.shape[axis]
+    k = int(np.floor(n * 0.25))
+    if n - 2 * k > 0:
+        x = np.take(x, np.arange(k, n - k), axis=axis)
+    return x.mean(axis=axis)
+
+
+def bootstrap_iqm_ci(values, level=0.95, n_resamples=N_RESAMPLES):
+    """Percentile bootstrap interval for the IQM over runs.
+
+    Resamples the runs with replacement and takes percentiles of the resulting
+    IQMs. It assumes no distribution, and unlike a t interval it cannot extend
+    past returns that actually occurred: an early version of this script drew a
+    normal-approximation band reaching below zero, a return the environment
+    cannot produce.
+    """
+    x = np.asarray(values, dtype=float)
+    if len(x) < 2:
+        return float(x[0]), float(x[0])
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    idx = rng.integers(0, len(x), size=(n_resamples, len(x)))
+    stats = iqm(x[idx], axis=1)
+    tail = (1 - level) / 2 * 100
+    lo, hi = np.percentile(stats, [tail, 100 - tail])
+    return float(lo), float(hi)
+
+
+def iqm_curve(curves, level=0.95, n_resamples=N_RESAMPLES_CURVE):
+    """IQM across seeds at every evaluation point, with a bootstrap band."""
+    n_seeds = curves.shape[0]
+    center = iqm(curves, axis=0)
+    if n_seeds < 2:
+        return center, center, center
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    idx = rng.integers(0, n_seeds, size=(n_resamples, n_seeds))
+    # curves[idx] is (n_resamples, n_seeds, n_evals); aggregate over seeds.
+    stats = iqm(curves[idx], axis=1)
+    tail = (1 - level) / 2 * 100
+    lo, hi = np.percentile(stats, [tail, 100 - tail], axis=0)
+    return center, lo, hi
 
 
 def load_algo_results(results_dir, env_id, algo):
@@ -144,28 +198,36 @@ def mannwhitney_exact(a, b):
     return observed, at_least_as_extreme / total
 
 
-def plot_curves(ax, data, env_id):
-    """Learning curves: per-seed lines, min-max band, and the mean."""
+def plot_curves(ax, data, env_id, band="minmax"):
+    """Learning curves: per-seed lines, an uncertainty band, and a center line.
+
+    band="minmax" draws the observed range across seeds around the mean, which
+    shows the spread exactly as it occurred. band="iqm" draws the interquartile
+    mean with a percentile bootstrap interval, which is the aggregate Agarwal
+    et al. (2021) recommend. Neither can extend past returns that occurred.
+    """
     end_labels = []
 
     for index, (algo, (timesteps, curves)) in enumerate(data.items()):
         color = color_for(algo, index)
 
-        # Individual seeds, drawn thin. With 3 seeds this is the honest view:
-        # it shows the spread as it actually is instead of a modelled interval.
+        # Individual seeds, drawn thin. At five runs this is the honest view:
+        # it shows the spread as it is instead of only a summary of it.
         for curve in curves:
             ax.plot(timesteps, curve, color=color, linewidth=0.7, alpha=0.35)
 
-        # Band spans the observed min and max across seeds. Unlike a normal
-        # approximation interval it cannot extend past values that occurred,
-        # so it never implies an impossible return.
-        ax.fill_between(timesteps, curves.min(axis=0), curves.max(axis=0),
-                        color=color, alpha=0.13, linewidth=0)
+        if band == "iqm":
+            center, lo, hi = iqm_curve(curves)
+            center_label = "IQM"
+        else:
+            center = curves.mean(axis=0)
+            lo, hi = curves.min(axis=0), curves.max(axis=0)
+            center_label = "mean"
 
-        mean = curves.mean(axis=0)
-        ax.plot(timesteps, mean, color=color, linewidth=2,
+        ax.fill_between(timesteps, lo, hi, color=color, alpha=0.13, linewidth=0)
+        ax.plot(timesteps, center, color=color, linewidth=2,
                 label=f"{algo.upper()} (n={curves.shape[0]})")
-        end_labels.append([mean[-1], timesteps[-1], algo.upper(), color])
+        end_labels.append([center[-1], timesteps[-1], algo.upper(), color])
 
     # Direct labels at the right edge, so identity never rests on color alone.
     # Arms that end close together would print on top of each other, so nudge
@@ -183,7 +245,9 @@ def plot_curves(ax, data, env_id):
 
     ax.set_xlabel("environment steps", color="#52514e", fontsize=10)
     ax.set_ylabel("evaluation return", color="#52514e", fontsize=10)
-    ax.set_title(f"{env_id}: mean across seeds, band = min-max, "
+    subtitle = ("IQM across seeds, band = 95% bootstrap" if band == "iqm"
+                else "mean across seeds, band = min-max")
+    ax.set_title(f"{env_id}: {subtitle}, "
                  f"smoothed over {SMOOTH_WINDOW} evaluations",
                  color=INK, fontsize=11, loc="left", pad=12)
 
@@ -211,20 +275,35 @@ def print_final_table(data, window_hint):
         n = len(final)
         sem = final.std(ddof=1) / np.sqrt(n) if n > 1 else 0.0
         ci = T_CRIT_95.get(n - 1, 1.96) * sem
-        rows.append((algo, n, window, final, final.mean(), ci))
+        point = iqm(final)
+        lo, hi = bootstrap_iqm_ci(final)
+        rows.append((algo, n, window, final, point, (lo, hi), final.mean(), ci))
 
     # Width follows the longest arm name, so an ablation label such as
     # "sac_ls1000" does not push the numeric columns out of alignment.
     name_col = max(6, max(len(algo) for algo, *_ in rows) + 2)
-    header = (f"{'algo':<{name_col}}{'seeds':>7}{'window':>8}{'final':>10}"
-              f"{'95% CI':>10}{'min':>10}{'max':>10}")
+    header = (f"{'arm':<{name_col}}{'seeds':>7}{'IQM':>9}"
+              f"{'95% CI (bootstrap)':>22}{'mean':>9}{'95% CI (t)':>13}"
+              f"{'min':>9}{'max':>9}")
     print("\nFINAL PERFORMANCE")
     print(header)
     print("-" * len(header))
-    for algo, n, window, final, mean, ci in rows:
-        print(f"{algo.upper():<{name_col}}{n:>7}{window:>8}{mean:>10.1f}{ci:>10.1f}"
-              f"{final.min():>10.1f}{final.max():>10.1f}")
-    print(f"\n'window' is how many final evaluation points were averaged per seed.")
+    for algo, n, window, final, point, (lo, hi), mean, ci in rows:
+        band = f"[{lo:.0f}, {hi:.0f}]"
+        print(f"{algo.upper():<{name_col}}{n:>7}{point:>9.1f}{band:>22}"
+              f"{mean:>9.1f}{('+/- %.1f' % ci):>13}"
+              f"{final.min():>9.1f}{final.max():>9.1f}")
+
+    print(f"\nScores are the mean of each seed's last {rows[0][2]} evaluation points.")
+    print("IQM is the mean of the middle 50% of seeds, with a percentile bootstrap "
+          "interval.\nThe mean and t interval are kept beside it for comparison; "
+          "where the two\ndisagree, the mean is being moved by one extreme seed.")
+
+    min_n = min(r[1] for r in rows)
+    if min_n < 10:
+        print(f"\nWith {min_n} seeds the bootstrap resamples a very small set and its "
+              "interval is\noptimistic. Treat it as a better-behaved interval than the "
+              "t one, not a tight one.")
     return rows
 
 
@@ -233,8 +312,8 @@ def print_separation(rows):
     if len(rows) != 2:
         return
 
-    (algo_a, _, _, final_a, mean_a, _), (algo_b, _, _, final_b, mean_b, _) = rows
-    if mean_b < mean_a:
+    (algo_a, _, _, final_a, point_a, *_), (algo_b, _, _, final_b, point_b, *_) = rows
+    if point_b < point_a:
         algo_a, algo_b = algo_b, algo_a
         final_a, final_b = final_b, final_a
 
@@ -252,6 +331,13 @@ def print_separation(rows):
 
     n_a, n_b = len(final_a), len(final_b)
     floor = 1 / math.comb(n_a + n_b, n_a)
+
+    # U counts the seed pairs in which one arm beat the other, so U / (n_a * n_b)
+    # estimates P(a run of B beats a run of A). Agarwal et al. (2021) report this
+    # as probability of improvement; it says how often, not by how much.
+    prob = u / (n_a * n_b)
+    print(f"P({algo_b.upper()} run beats {algo_a.upper()} run) = {prob:.2f} "
+          f"({u:.0f} of {n_a * n_b} seed pairs)")
     print(f"One-sided exact Mann-Whitney ({algo_b.upper()} > {algo_a.upper()}): "
           f"U = {u:.1f}, p = {p:.4f}")
     print(f"Smallest p this design can produce with {n_a} vs {n_b} seeds: {floor:.4f}. "
@@ -300,6 +386,10 @@ def main():
     parser.add_argument("--thresholds", nargs="+", type=float,
                         default=[1000, 2000, 2500, 3000])
     parser.add_argument("--smooth", type=int, default=SMOOTH_WINDOW)
+    parser.add_argument("--band", choices=["minmax", "iqm"], default="minmax",
+                        help="minmax draws the observed range around the mean; "
+                             "iqm draws the interquartile mean with a bootstrap "
+                             "interval.")
     args = parser.parse_args()
 
     SMOOTH_WINDOW = args.smooth
@@ -321,10 +411,11 @@ def main():
     fig, ax = plt.subplots(figsize=(9, 5))
     fig.patch.set_facecolor("#ffffff")
     ax.set_facecolor("#ffffff")
-    plot_curves(ax, smoothed, args.env)
+    plot_curves(ax, smoothed, args.env, band=args.band)
     fig.tight_layout()
 
-    out_path = f"{args.env.lower()}_comparison.png"
+    suffix = "_iqm" if args.band == "iqm" else ""
+    out_path = f"{args.env.lower()}_comparison{suffix}.png"
     fig.savefig(out_path, dpi=200, facecolor="#ffffff")
     print(f"Plot saved to {out_path}")
 
@@ -332,7 +423,7 @@ def main():
     print_separation(rows)
     print_threshold_table(smoothed, args.thresholds)
 
-    max_seeds = max(len(r[3]) for r in rows)
+    max_seeds = max(r[1] for r in rows)
     if max_seeds < 5:
         print(f"\n{max_seeds} seeds is the bare minimum. Rerun with SEEDS=5 before "
               "reporting this anywhere.")
