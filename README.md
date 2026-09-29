@@ -17,7 +17,7 @@ survives being wrong about them.
 
 | Hopper-v5 | Walker2d-v5 |
 |---|---|
-| ![SAC policy on Hopper-v5](videos/hopper-v5_sac_seed0.gif) | ![SAC policy on Walker2d-v5](videos/walker2d-v5_sac_seed0.gif) |
+| ![SAC policy on Hopper-v5](videos/hopper-v5_sac_seed4.gif) | ![SAC policy on Walker2d-v5](videos/walker2d-v5_sac_seed3.gif) |
 
 Trained SAC policies, best seed of five, acting deterministically. Recorded with
 `record_policy.py`, which reloads the saved checkpoint and, for PPO, the saved
